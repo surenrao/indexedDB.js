@@ -3,7 +3,15 @@
 //Version: 0.0.1
 (function (window, undefined) {
     
-    window.nsr = window.nsr || {};
+    var nsr = window.nsr = window.nsr || {};
+    
+    nsr.isArray = function(obj){
+        if (Array.isArray)
+            return Array.isArray(obj);
+        else
+            return Object.prototype.toString.call( obj ) === '[object Array]';
+    }
+    
     nsr.indexedDB = nsr.indexedDB || {};    
     
     var indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
@@ -23,8 +31,140 @@
         }
     }
     
-    nsr.indexedDB.Open = function (callback) { 
-        //Not Done yet. Need to figure out an abstracted version
+    nsr.indexedDB.SchemaModel = function(dbName, dbVersion){
+        this.dbName = dbName;
+        this.dbVersion = dbVersion;
+        this.dbStores = {};
+        this.storesCount = 0;
+        this.dbStoreMap = [];
+        //this.dbData can import the whole db         
+        this.dbData = '';//dictionary<storeName,Array<data>>
+    }
+    
+    nsr.indexedDB.SchemaModel.prototype.AddStore = function(storeName, keyPath, isAutoIncrement, preserveData){
+        this.storesCount= this.storesCount+1;
+        this.dbStores[storeName] = {'storeName': storeName,'keyPath': keyPath,'isAutoIncrement': isAutoIncrement,'indexes':[],'storeCounter':this.storesCount,'preserveData':preserveData||false};        
+        this.dbStoreMap[this.storesCount] = storeName;
+    } 
+    
+    nsr.indexedDB.SchemaModel.prototype.AddIndex = function(storeName, indexName, indexField, isUnique){
+        if(storeName in this.dbStores)
+            this.dbStores[storeName]['indexes'].push({ 'indexName': indexName,'indexField': indexField,'isUnique': isUnique});
+        else
+            throw new Error('Missing Store ('+storeName + '). Call AddStore() to Add store');
+    }
+    
+    nsr.indexedDB.SchemaModel.prototype.AddAllData = function(json){
+        //this.dbData can import the whole db         
+        this.dbData = json;//dictionary<storeName,Array<data>>
+    }
+    
+    nsr.indexedDB.backup ={};
+    
+    nsr.indexedDB.Open = function (schemas /*Array of nsr.indexedDB.SchemaModel */, callback /* function(result) -1,0,1*/) { 
+         var DropObjectStore = function (db, storeName) {
+                if (db && db.objectStoreNames.contains(storeName)) {
+                    db.deleteObjectStore(storeName);
+                    console.log('objectstore ' + storeName + ' dropped');
+                }
+            }
+    
+        var CreateObjectStore = function (db, store) {
+            if (db && !db.objectStoreNames.contains(store.storeName)) {
+                var objectStore = db.createObjectStore(store.storeName, { keyPath: store.keyPath, autoIncrement: store.isAutoIncrement});
+                for(var indexIdx = 0; indexIdx < store.indexes.length; indexIdx++ ){
+                    if(objectStore.indexNames.contains(store.indexes[indexIdx].indexName)){
+                        objectStore.deleteIndex(store.indexes[indexIdx].indexName);
+                    }
+                    objectStore.createIndex(store.indexes[indexIdx].indexName, store.indexes[indexIdx].indexField, { unique:  store.indexes[indexIdx].isUnique });
+                }   
+                console.log('objectstore ' + store.storeName + ' created');
+            }
+        }
+        
+        if(schemas && nsr.isArray(schemas) && schemas.length > 0)
+        {    
+            var schema0 = schemas[schemas.length - 1];//set version with latest version
+            var dbOpenRequest = indexedDB.open(schema0.dbName, schema0.dbVersion);
+            
+            dbOpenRequest.onblocked = function (e) {
+                // If some other tab is loaded with the database, then it needs to be closed
+                // before we can proceed.
+                if(callback)
+                    callback(-1,'Close all tabs, before proceeding'); 
+            };
+            
+            //onupgradeneeded will be called first if there is a version change and then success will be called
+            dbOpenRequest.onupgradeneeded = function (e) {          
+                var db = nsr.indexedDB.db = e.target.result;                
+                var transaction = e.target.transaction;//VERSION_CHANGE mode
+                //use the same transaction to do multiple things??
+                for(var verIdx = 0; verIdx < schemas.length; verIdx++ ){
+                    var schema = schemas[verIdx];                    
+                    if(e.oldVersion <= schema.dbVersion){                        
+                        for(storeKey in schema.dbStores){
+                            var store = schema.dbStores[storeKey];
+                            try{
+                                if(db.objectStoreNames.contains(store.storeName)){ 
+                                  nsr.indexedDB.backup[store.storeName] = [];
+                                  var backupRequest = transaction.objectStore(store.storeName).openCursor();
+                                  backupRequest.onsuccess = function(e){ 
+                                    var cursor = e.target.result;
+                                    if (cursor){
+                                      nsr.indexedDB.backup[store.storeName].push(cursor.value);
+                                      cursor.continue();
+                                    }else
+                                    {
+                                        DropObjectStore(db, store.storeName);
+                                        CreateObjectStore(db, store);
+                                    }
+                                  };
+                                }else{
+                                    CreateObjectStore(db, store);
+                                }
+                                
+                            }catch(ex){
+                                console.log(ex);
+                            }                            
+                        }
+                    }
+                }
+                transaction.oncomplete = function() {
+                    var schema = schemas[schemas.length - 1];                     
+                    //console.log('dbOpenRequest transaction Complete ',schema);
+                    
+                    if(schema.dbData){
+                        //bulk insert data since all stores are created
+                        nsr.indexedDB.ImportDB(schema.dbData, [], function (st){
+                            //console.log('import Complete status ',st);
+                            if(callback)
+                                callback(1,'Created '+ nsr.indexedDB.db.name +' and import Complete with version:'+nsr.indexedDB.db.version); 
+                        });
+                    }
+                    else{
+                        if(callback)
+                            callback(1,'Created '+ nsr.indexedDB.db.name +' with version:'+nsr.indexedDB.db.version); 
+                    }    
+                    //nsr.indexedDB.backup
+                };                
+            };
+            
+            dbOpenRequest.onsuccess = function (e) {  
+                nsr.indexedDB.db = e.target.result;
+                //console.log(nsr.indexedDB.db.objectStoreNames);
+                if(callback)
+                    callback(0,'Opened '+ nsr.indexedDB.db.name +' with version:'+nsr.indexedDB.db.version);    
+            };
+            
+            dbOpenRequest.onerror = function(e) {
+                nsr.indexedDB.onError(e, callback);
+            }
+        }
+        else
+        {
+            if(callback)
+                callback(-1,'schemas (array of nsr.indexedDB.SchemaModel) is required');
+        }
     }
     
     nsr.indexedDB.Close = function(callback){
@@ -51,26 +191,20 @@
         
         var deleteReq = window.indexedDB.deleteDatabase(dbName);
         deleteReq.onsuccess = function(){
-            console.log("Database deleted");
-            callback(1);
+            //console.log("Database deleted");
+            callback(1,'Database deleted');
         };
         deleteReq.onblocked = function (e) {
-          console.log("db Blocked!: ", e);   
-          callback(0);          
+          //console.log("db Blocked!: ", e);   
+          callback(0,'db Blocked! Close all tabs.');          
         };
         deleteReq.onerror = function(e){
-            console.log("Could not delete database. Database may not exist");
-            callback(-1);
+            //console.log("Could not delete database. Database may not exist");
+            callback(-1,'Could not delete database. Database may not exist');
         };    
     }
     
-    nsr.indexedDB.DropObjectStore = function (storeName) {
-        var db = nsr.indexedDB.db;
-        if (db && db.objectStoreNames.contains(storeName)) {
-            db.deleteObjectStore(storeName);
-            console.log('objectstore ' + storeName + ' dropped');
-        }
-    }
+   
     
     //operator can be string i.e ">=" or  ">= && <=" etc.
     //values is array with at least one or max of two entries
@@ -470,12 +604,13 @@
     
     //Export the database as json
     //excludeList:array contains storenames to skip
-    nsr.indexedDB.ExportDB = function(excludeList,callback){
+    nsr.indexedDB.ExportDB = function(excludeList, callback){
         var db = nsr.indexedDB.db;
         if(db){
             var storeList = db.objectStoreNames;
             console.log(storeList);
-            var obj = {};               
+            var obj = {};          
+            excludeList = excludeList || [];
             for(var i=0;i<storeList.length;i++)
             {       
                 nsr.indexedDB.ExportObjectStore(storeList[i], i, excludeList ,function(list, index){                                
@@ -493,23 +628,23 @@
     //Export single store as javascript list
     //index:integer only used for tracking
     //excludeList:array contains storenames to skip
-    nsr.indexedDB.ExportObjectStore = function(storeName,index,excludeList, callback){
+    nsr.indexedDB.ExportObjectStore = function(storeName, trackIndex, excludeList, callback){
         var list = [];
         if(excludeList.indexOf(storeName)!=-1)
         {
             if(callback){
-                callback(list, index);
+                callback(list, trackIndex);
             }
             return;
         }
         var db = nsr.indexedDB.db;
         if(db){
-            var transaction = db.transaction(storeName, transactionType.READ_ONLY);
+            var transaction = db.transaction(storeName, TransactionType.READ_ONLY);
             
             transaction.oncomplete = function(event) {
                 //console.log(list);
                 if(callback){
-                    callback(list, index);
+                    callback(list, trackIndex);
                 } 
             };         
             var cursorRequest = transaction.objectStore(storeName).openCursor();
@@ -525,15 +660,16 @@
     }
     //Import the database from json
     //excludeList:array contains storenames to skip
-    nsr.indexedDB.ImportDB = function(excludeList,jsonString){
+    nsr.indexedDB.ImportDB = function(json, excludeList, callback){
         var db = nsr.indexedDB.db;
         if(db){
-            var storeList = db.objectStoreNames;
-            console.log(storeList);
-            var obj = JSON.parse(jsonString);             
-            for(var i=0;i<storeList.length;i++)
+            var storeList = db.objectStoreNames;            
+            //console.log(storeList);
+            var obj = (typeof json === 'string') ? JSON.parse(json) : json;             
+            excludeList = excludeList || [];
+            for(var i=0; i<storeList.length; i++)
             {   
-                nsr.indexedDB.ImportObjectStore(storeList[i], obj[storeList[i]], i,excludeList, function(list, index){                                
+                nsr.indexedDB.ImportObjectStore(storeList[i], obj[storeList[i]], i, excludeList, function(list, index){                                
                     obj[storeList[index]] = list;
                     //console.log(storeName,list);
                     
@@ -548,33 +684,33 @@
     //Import the database from storeName and List
     //index:integer only used for tracking
     //excludeList:array contains storenames to skip
-    nsr.indexedDB.ImportObjectStore = function(storeName, storeObjList,index,excludeList, callback){        
+    nsr.indexedDB.ImportObjectStore = function(storeName, storeObjList, trackIndex, excludeList, callback){        
         if(excludeList.indexOf(storeName)!=-1)
         {
             if(callback){
-                callback(index, storeName, null);
+                callback(storeName, trackIndex, null);
             }
             return;
         }
         nsr.indexedDB.ClearAll(storeName,function(deleted){
             var db = nsr.indexedDB.db;
             if(db){
-                var transaction = db.transaction(storeName, transactionType.READ_WRITE);
+                var transaction = db.transaction(storeName, TransactionType.READ_WRITE);
                 var count = 0;
                 transaction.oncomplete = function(event) {  
                   if(callback){
-                    callback(index, storeName, count);
+                    callback(storeName, trackIndex, count);
                   }
                 }; 
                 transaction.onerror = function(e) {nsr.indexedDB.onError(e, callback);}
                 var store = transaction.objectStore(storeName);                        
-                
-                $.each(storeObjList, function (indexObj) {                
+                                
+                for(indexObj in storeObjList) {                
                     var request = store.put(storeObjList[indexObj]);
                     request.onsuccess = function(event) { 
                         count++;// event.target.result == keypath  
                     };
-                });
+                }
             }    
         });
     }
