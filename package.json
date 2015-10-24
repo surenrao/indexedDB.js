@@ -1,0 +1,28 @@
+{
+  "name": "indexdb",
+  "version": "1.0.0",
+  "description": "High level wrapper for IndexedDB",
+  "main": "src/indexdb.js",
+  "scripts": {
+    "test": "gulp specs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://surenrao@github.com/surenrao/indexedDB.js.git"
+  },
+  "keywords": [
+    "nosql",
+    "IndexedDB",
+    "indexdb"
+  ],
+  "author": "Surya Nyayapati",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/surenrao/indexedDB.js/issues"
+  },
+  "homepage": "https://github.com/surenrao/indexedDB.js#readme",
+  "devDependencies": {
+    "gulp": "^3.9.0",
+    "gulp-connect": "^2.2.0"
+  }
+}
