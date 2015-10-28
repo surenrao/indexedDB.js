@@ -99,44 +99,54 @@
             if(!boildb.schema){
                 reject('schema is not defined');
             }
+            console.log('about to open...');
             var dbOpenRequest = indexedDB.open(boildb.schema.dbName, boildb.schema.version);
             dbOpenRequest.onerror = function(err) {
+                console.log('dbOpenRequest.onerror!', event);
                 reject(err);
-            }
+            };
             dbOpenRequest.onblocked = function (event) {
                 //alert("Please close all other tabs with this page open!");
+                console.log('dbOpenRequest.onblocked!', event);
                 reject(event);
             };
             dbOpenRequest.onsuccess = function(event) {
                 boildb._db = event.target.result;
                 boildb._version = boildb.schema.version;
                 boildb._dbName = boildb.schema.dbName;
+                console.log('dbOpenRequest.onsuccess!', boildb);
                 resolve(0);
-                console.log('indexedDB.Open() success!', event);
             };
             dbOpenRequest.onupgradeneeded = function (event) {
-                console.log("onupgradeneeded!: ", event);
-                boildb._db = event.target.result;
+                console.log("dbOpenRequest.onupgradeneeded!: ", event);
+                var db = event.target.result;//VERSION_CHANGE mode
                 var oldVersion = event.oldVersion;
                 var newVersion = event.newVersion;
                 var transaction = dbOpenRequest.transaction;//VERSION_CHANGE mode
                 
-                if (oldVersion == 0) {//new user create everything
+                if (oldVersion === 0) {//new user create everything
+                    var dropPromises = [];
+                    var createPromises = [];
                     boildb.schema.stores.forEach(function(store, index, strArray){
-                        boildb.DropObjectStore(store.name).then(function(deleted){
-                            console.log('onupgradeneeded deleted', store);
-                            return boildb.CreateObjectStore(store);
-                        }).then(function(created){
-                            console.log('onupgradeneeded created',created);
-                        }).catch(function(err){
-                            console.log('onupgradeneeded err',err);
-                        });
+                        dropPromises.push(boildb.DropObjectStore(store.name, db));
+                        createPromises.push(boildb.CreateObjectStore(store, db));
+                    });
+                    
+                    Promise.all(dropPromises).then(function(values) { 
+                        console.log('onupgradeneeded deleted',values);
+                        Promise.all(createPromises).then(function(values) { 
+                          console.log('onupgradeneeded added',values);
+                        }, function(addreason) {
+                          console.log('onupgradeneeded add err', addreason);
+                        });  
+                    }, function(delreason) {
+                      console.log('onupgradeneeded del err', delreason);
                     });
                 }else{
                     //todo
                 }
                 transaction.oncomplete = function(event) {
-                    console.log('indexedDB.Open() complete! ',event);
+                    console.log('indexedDB.onupgradeneeded complete! ',event);
                     resolve(1);
                     //do data init
                     //boildb.schema.InitData(event.oldVersion, callback);
@@ -154,9 +164,9 @@
                     //    //todo
                     //}
                 };
-            }
+            };
         });
-    }
+    };
     
     boildb.GetDB = function(){
         return new Promise(function(resolve,reject){
@@ -206,50 +216,40 @@
         });
     }
     
-    boildb.DropObjectStore = function (storeName) {
+    boildb.DropObjectStore = function (storeName, db) {
         return new Promise(function(resolve, reject){
-            boildb.GetDB().then(function(db){
-                if (db.objectStoreNames.contains(storeName)) {
-                    db.deleteObjectStore(storeName);
-                    console.log('objectstore ' + storeName + ' dropped');
-                    resolve(true);
-                }else{
-                    console.log("Doesnt exist! cannot delete ObjectStore ",storeName);
-                    resolve(false);
-                }
-            }).catch(function(err){
-                console.log("db is null! cannot delete ObjectStore ",storeName);
-                reject(err);
-            });
+            if (db.objectStoreNames.contains(storeName)) {
+                db.deleteObjectStore(storeName);
+                console.log('objectstore ' + storeName + ' dropped');
+                resolve(true);
+            }else{
+                console.log("Doesnt exist! cannot delete ObjectStore ",storeName);
+                resolve(false);
+            }
         });
     }
     
-    boildb.CreateObjectStore = function (storeSchema) {
-        console.log(storeSchema);
+    boildb.CreateObjectStore = function (storeSchema, db) {
+        console.log('CreateObjectStore',storeSchema);
         return new Promise(function(resolve, reject){
-            boildb.GetDB().then(function(db){
-                var strParam = {};
-                if(!!storeSchema.primaryField)
-                    strParam.keyPath = storeSchema.primaryField;
-                
-                strParam.autoIncrement = (storeSchema.autoIncrement !== undefined) ? storeSchema.autoIncrement : false;
-                
-                var store = db.createObjectStore(storeSchema.name, strParam);
-                if(!!storeSchema.indexes){
-                    for(var i=0;i<storeSchema.indexes.length;i++){
-                        var idxParam = {};
-                        idxParam.unique = (storeSchema.indexes[i].unique !== undefined) ? idxParam.unique : false;
-                        idxParam.multiEntry = (storeSchema.indexes[i].multiEntry !== undefined) ? idxParam.multiEntry : false;
+            var strParam = {};
+            if(!!storeSchema.primaryField)
+                strParam.keyPath = storeSchema.primaryField;
 
-                        store.createIndex(storeSchema.indexes[i].name, storeSchema.indexes[i].field, idxParam);
-                    }
+            strParam.autoIncrement = (storeSchema.autoIncrement !== undefined) ? storeSchema.autoIncrement : false;
+
+            var store = db.createObjectStore(storeSchema.name, strParam);
+            if(!!storeSchema.indexes){
+                for(var i=0;i<storeSchema.indexes.length;i++){
+                    var idxParam = {};
+                    idxParam.unique = (storeSchema.indexes[i].unique !== undefined) ? idxParam.unique : false;
+                    idxParam.multiEntry = (storeSchema.indexes[i].multiEntry !== undefined) ? idxParam.multiEntry : false;
+
+                    store.createIndex(storeSchema.indexes[i].name, storeSchema.indexes[i].field, idxParam);
                 }
-                
-                resolve(store);    
-            }).catch(function(err){
-                console.log("db is null! cannot create ObjectStore ",storeSchema.name);
-                reject(err);
-            });
+            }
+
+            resolve(store);    
         });
     }
     

@@ -39,6 +39,7 @@
                   //console.log('Promise',promiseResolve,promiseReject);
                   expect(promiseResolve).toBeDefined();
                   expect(promiseReject).toBeDefined();
+                  
                   done();
               });
 
@@ -59,7 +60,6 @@
                         expect(val).toEqual(-1);
                         done();
                   });
-                  
               });
           });
             
@@ -68,7 +68,15 @@
           });
             
         });//Dependancy check
-
+        
+        it( 'error passed when schema is not defined' , function (done) {
+                
+            boildb.Open().catch(function ( status ) {
+                expect( status ).toEqual('schema is not defined'); 
+                done();
+            });
+        });
+        
         describe("Boildb check", function() {
             //https://github.com/joshtronic/holidayapi.com
             //https://github.com/aaronpowell/db.js/blob/master/tests/specs/indexes.js
@@ -358,51 +366,34 @@
 //                    }
 //            ];
             var dbName = 'testDB';
-            
             function specDeleteDatabase(spec, done){
                 var req = indexedDB.deleteDatabase( dbName );
 
                 req.onsuccess = function () {
+                    console.log( 'db delete success' );
                     done();
                 };
 
                 req.onerror = function () {
                     console.log( 'failed to delete db in beforeEach' , arguments );
+                    done();
                 };
 
                 req.onblocked = function () {
                     console.log( 'db blocked' , arguments , spec );
-                    //done();
+                    done();
                 };
             }
             //clear db before each 'it'
             beforeEach(function (done) {
                 var spec = this;
-
-                spec.db = undefined;
+                if(boildb._db !==null)
+                      boildb._db.close();
                 console.log('beforeEach');
                 specDeleteDatabase(spec, done);
-            }, 5000);
-            //clear db after each 'it'
-            afterEach( function (done) {
-                var spec = this;
-                console.log('afterEach');
-                if(spec.db){
-                    spec.db.close();
-                }
-                specDeleteDatabase(spec, done);
-            }, 5000);
-                
-            it( 'error passed when schema is not defined' , function (done) {
-                var spec = this;
-                boildb.Open().catch(function ( status ) {
-                    expect( status ).toEqual('schema is not defined'); 
-                    done();
-                });
             });
             
             it( 'should allow creating dbs with stores' , function (done) {
-                var spec = this;
                 //call boildb API to test
                 boildb.schema = {
                     "dbName"   : dbName,
@@ -422,25 +413,26 @@
                 };
                 
                 boildb.Open().then(function ( status ) {
-                    
+                    if(boildb._db !==null)
+                      boildb._db.close();
+                    console.log('open status ',status);
                     var req = indexedDB.open( dbName , 1 );
                     req.onsuccess = function ( e ) {
-                        spec.db = e.target.result;
-                        var storeList = spec.db.objectStoreNames;
+                        var db = e.target.result;
+                        var storeList = db.objectStoreNames;
                         var StoreNames = Array.prototype.slice.call( storeList );
                         console.log(StoreNames);
                         expect( storeList.length ).toEqual( 3 );
                         expect( StoreNames ).toContain( 'test0' );
                         expect( StoreNames ).toContain( 'test1' );
                         expect( StoreNames ).toContain( 'test2' );
-
+                        db.close();
                         done();
                     };
                 });
             });
             
             it( 'should allow creating dbs with stores2' , function (done) {
-                var spec = this;
                 //call boildb API to test
                 boildb.schema = {
                     "dbName"   : dbName,
@@ -460,18 +452,20 @@
                 };
                 
                 boildb.Open().then(function ( status ) {
-                    
+                  if(boildb._db !==null)
+                    boildb._db.close();
+                    console.log('open status ', status);
                     var req = indexedDB.open( dbName , 1 );
                     req.onsuccess = function ( e ) {
-                        spec.db = e.target.result;
-                        var storeList = spec.db.objectStoreNames;
+                        var db = e.target.result;
+                        var storeList = db.objectStoreNames;
                         var StoreNames = Array.prototype.slice.call( storeList );
                         console.log(StoreNames);
                         expect( storeList.length ).toEqual( 3 );
                         expect( StoreNames ).toContain( 'test0' );
                         expect( StoreNames ).toContain( 'test1' );
                         expect( StoreNames ).toContain( 'test2' );
-
+                        db.close();
                         done();
                     };
                 });
