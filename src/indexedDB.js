@@ -4,10 +4,13 @@
 (function (environment, boildb, undefined) {
     "use strict";
     
-    var indexedDB = environment.indexedDB || environment.mozIndexedDB || environment.webkitIndexedDB || environment.msIndexedDB;
-    if(!indexedDB)
-    {
-        throw new Error("Current browser does not suppport indexedDB.");   
+    var getIndexedDB = function(env){
+        var indexedDB = env.indexedDB || env.mozIndexedDB || env.webkitIndexedDB || env.msIndexedDB;
+        if(!indexedDB)
+        {
+            throw new Error("Current browser does not suppport indexedDB.");   
+        }
+        return indexedDB;
     }
     
      // (Mozilla has never prefixed these objects, so we don't need environment.mozIDB*) and opera has become webkit based
@@ -15,8 +18,8 @@
     var IDBKeyRange = environment.IDBKeyRange || environment.webkitIDBKeyRange || environment.msIDBKeyRange;
     var IDBCursor = environment.IDBCursor || environment.webkitIDBCursor || environment.msIDBCursor;
 
-    var TransactionType = { READ_ONLY: "readonly", READ_WRITE: "readwrite" }
-    var CursorType = { NEXT: "next", NEXT_NO_DUPLICATE: "nextunique", PREV: "prev", PREV_NO_DUPLICATE:"prevunique"}
+    var TransactionType = { READ_ONLY: "readonly", READ_WRITE: "readwrite" };
+    var CursorType = { NEXT: "next", NEXT_NO_DUPLICATE: "nextunique", PREV: "prev", PREV_NO_DUPLICATE:"prevunique"};
     
     var util = {};
     
@@ -27,95 +30,65 @@
             return Object.prototype.toString.call( obj ) === '[object Array]';
     }
     
-    //schema structure
-    //    {
-    //        "dbName"   :"testDB",
-    //        "version"  :1,
-    //        //contains all final stores for new users
-    //        "stores"   :[{
-    //                        "name"         :"storeName1",
-    //                        "primaryField" :"",
-    //                        "autoIncrement":false,
-    //                        "indexes"      :[{
-    //                            "name":"",
-    //                            "field":"",
-    //                            "unique":false,
-    //                            "multiEntry":false//can index a field which is an array(i.e. can do tags)
-    //                        }]
-    //                    }],
-    //        "seedData": {"storeName1":[]},
-    //        //contains revisions for existing user
-    //        "revisions":[{
-    //            "version":1,
-    //            "stores":[],
-    //            "seedData": {"storeName1":[]},
-    //        }],
-    //    };
-    boildb.schema = null;
+    var _schema = null;
+    var _db = null;
+    var _version = null;
+    var _dbName = null;
     
-    boildb._db = null;
-    boildb._version = null;
-    boildb._dbName = null;
-    
-    boildb.GetKeyRange = function(operator, values) {
-        //console.log('GetKeyRange',operator, values);
-        var range = null;
-        switch (operator) {
-          case "==":
-            range = IDBKeyRange.only(values[0]);
-            break;
-          case "<":
-            range = IDBKeyRange.upperBound(values[0], true);
-            break;
-          case "<=":
-            range = IDBKeyRange.upperBound(values[0]);
-            break;
-          case ">":
-            range = IDBKeyRange.lowerBound(values[0], true);
-            break;
-          case ">=":
-            range = IDBKeyRange.lowerBound(values[0]);
-            range.upperOpen = true;
-            break;
-          case "> && <":
-            range = IDBKeyRange.bound(values[0], values[1], true, true);
-            break;
-          case ">= && <=":
-            //IDBKeyRange.bound(searchTerm, searchTerm + '\uffff') It'd be better to use \uffff as your dagger rather than z. You won't get search results like "wikip�dia" when searching for "wiki" if you use z...
-			range = IDBKeyRange.bound(values[0], values[1]);
-            break;
-         case "> && <=":
-            range = IDBKeyRange.bound(values[0], values[1], true, false);
-            break;
-          case ">= && <":
-            range = IDBKeyRange.bound(values[0], values[1], false, true);
-            break;
-        }
-        return range;
-    }
-    
-    boildb.Open = function () {
-        return new Promise(function(resolve,reject){
-            if(!boildb.schema){
+    boildb.Open = function (schema) {
+        //schema structure
+        //    {
+        //        "dbName"   :"testDB",
+        //        "version"  :1,
+        //        //contains all final stores for new users
+        //        "stores"   :[{
+        //                        "name"         :"storeName1",
+        //                        "primaryField" :"",
+        //                        "autoIncrement":false,
+        //                        "indexes"      :[{
+        //                            "name":"",
+        //                            "field":"",
+        //                            "unique":false,
+        //                            "multiEntry":false//can index a field which is an array(i.e. can do tags)
+        //                        }]
+        //                    }],
+        //        "seedData": {"storeName1":[]},
+        //        //contains revisions for existing user
+        //        "revisions":[{
+        //            "version":1,
+        //            "stores":[],
+        //            "seedData": {"storeName1":[]},
+        //        }],
+        //    };
+        return new Promise(function(resolve, reject){
+            if(!!schema){
+                _schema = schema;
+            }
+            
+            if(!_schema){
                 reject('schema is not defined');
             }
-            console.log('about to open...');
-            var dbOpenRequest = indexedDB.open(boildb.schema.dbName, boildb.schema.version);
+            console.log('about to open...',_schema);
+            boildb.Close();
+            var dbOpenRequest = getIndexedDB(environment).open(_schema.dbName, _schema.version);
+            
             dbOpenRequest.onerror = function(err) {
-                console.log('dbOpenRequest.onerror!', event);
+                console.log('dbOpenRequest.onerror!', err);
+                //_db.close();
                 reject(err);
             };
             dbOpenRequest.onblocked = function (event) {
                 //alert("Please close all other tabs with this page open!");
                 console.log('dbOpenRequest.onblocked!', event);
+                //_db.close();
                 reject(event);
             };
             dbOpenRequest.onsuccess = function(event) {
-                boildb._db = event.target.result;
-                boildb._version = boildb.schema.version;
-                boildb._dbName = boildb.schema.dbName;
+                _db = event.target.result;
+                _version = _schema.version;
+                _dbName = _schema.dbName;
                 console.log('dbOpenRequest.onsuccess!', boildb);
-                resolve(0);
+                resolve(new Session(_db));
             };
             dbOpenRequest.onupgradeneeded = function (event) {
                 console.log("dbOpenRequest.onupgradeneeded!: ", event);
@@ -125,11 +98,21 @@
                 var transaction = dbOpenRequest.transaction;//VERSION_CHANGE mode
                 
                 if (oldVersion === 0) {//new user create everything
+                    var createPromises = [];
+                    _schema.stores.forEach(function(store, index, strArray){
+                        createPromises.push(CreateObjectStore(store, db));
+                    });
+                    Promise.all(createPromises).then(function(values) { 
+                        console.log('onupgradeneeded added',values);
+                    }, function(addreason) {
+                        console.log('onupgradeneeded add err', addreason);
+                    });  
+                }else{
                     var dropPromises = [];
                     var createPromises = [];
-                    boildb.schema.stores.forEach(function(store, index, strArray){
-                        dropPromises.push(boildb.DropObjectStore(store.name, db));
-                        createPromises.push(boildb.CreateObjectStore(store, db));
+                    _schema.stores.forEach(function(store, index, strArray){
+                        dropPromises.push(DropObjectStore(store.name, db));
+                        createPromises.push(CreateObjectStore(store, db));
                     });
                     
                     Promise.all(dropPromises).then(function(values) { 
@@ -142,14 +125,13 @@
                     }, function(delreason) {
                       console.log('onupgradeneeded del err', delreason);
                     });
-                }else{
-                    //todo
                 }
                 transaction.oncomplete = function(event) {
                     console.log('indexedDB.onupgradeneeded complete! ',event);
-                    resolve(1);
                     //do data init
-                    //boildb.schema.InitData(event.oldVersion, callback);
+
+
+                    //_schema.InitData(event.oldVersion, callback);
                     //if (oldVersion == 0) {
                     //    var count = Object.keys(schema.seedData).length;
                     //    for(storeName in schema.seedData){
@@ -163,99 +145,166 @@
                     //}else{
                     //    //todo
                     //}
+
+                    
+                    //should not close db once upgrade is over
+                    //since if called then success is not called and error is invoked.
+                    //db.close();
+                    //resolve(1) //dont put resolve here since its not the end yet
                 };
             };
         });
+        
+        function DropObjectStore(storeName, db) {
+            return new Promise(function(resolve, reject){
+                if (db.objectStoreNames.contains(storeName)) {
+                    db.deleteObjectStore(storeName);
+                    console.log('objectstore ' + storeName + ' dropped');
+                    resolve(true);
+                }else{
+                    console.log("Doesnt exist! cannot delete ObjectStore ",storeName);
+                    resolve(false);
+                }
+            });
+        }
+    
+        function CreateObjectStore(storeSchema, db) {
+            console.log('CreateObjectStore',storeSchema);
+            return new Promise(function(resolve, reject){
+                var strParam = {};
+                if(!!storeSchema.primaryField)
+                    strParam.keyPath = storeSchema.primaryField;
+
+                strParam.autoIncrement = (storeSchema.autoIncrement !== undefined) ? storeSchema.autoIncrement : false;
+
+                var store = db.createObjectStore(storeSchema.name, strParam);
+                if(!!storeSchema.indexes){
+                    for(var i=0;i<storeSchema.indexes.length;i++){
+                        var idxParam = {};
+                        idxParam.unique = (storeSchema.indexes[i].unique !== undefined) ? idxParam.unique : false;
+                        idxParam.multiEntry = (storeSchema.indexes[i].multiEntry !== undefined) ? idxParam.multiEntry : false;
+
+                        store.createIndex(storeSchema.indexes[i].name, storeSchema.indexes[i].field, idxParam);
+                    }
+                }
+
+                resolve(store);    
+            });
+        }
     };
     
-    boildb.GetDB = function(){
-        return new Promise(function(resolve,reject){
-            if(!!boildb._db) {
-                resolve(boildb._db);
-            }else{
-                boildb.Open().then(function(status){
-                    resolve(boildb._db);
-                }).catch(function(err){
-                    reject(err);
-                });
-            }
-        });
-    }
-
     boildb.Close = function(){
-        return new Promise(function(resolve, reject){
-            boildb.GetDB().then(function(db){
-                db.close();
-                boildb._db = null;
-                resolve(true);
-            }).catch(function(err){
-                reject(err);
-            });
-        });
+        if(_db !== null){
+            _db.close();
+        }
     }
 	
     boildb.DeleteDatabase = function(dbName){
-		console.log('DeleteDatabase ', dbName || boildb._dbName);
+		console.log('DeleteDatabase ', dbName || _dbName);
 		return new Promise(function(resolve, reject){
-            boildb.Close().then(function(status){
-                var deleteReq = indexedDB.deleteDatabase(dbName || boildb._dbName);
-                deleteReq.onsuccess = function(){
-                    console.log("Database deleted");
-                    resolve(true);
-                };
-                deleteReq.onblocked = function (e) {
-                  //alert("database blocked. Please close all tabs");
-                  console.log("db Blocked!: ", e);
-                  reject(false, e);
-                };
-                deleteReq.onerror = function(e){
-                    //alert("Could not delete database. Database may not exist");
-                    reject(false, e);
-                };
-            });
-        });
-    }
-    
-    boildb.DropObjectStore = function (storeName, db) {
-        return new Promise(function(resolve, reject){
-            if (db.objectStoreNames.contains(storeName)) {
-                db.deleteObjectStore(storeName);
-                console.log('objectstore ' + storeName + ' dropped');
+            boildb.Close();
+            var deleteReq = getIndexedDB(environment).deleteDatabase(dbName || _dbName);
+            deleteReq.onsuccess = function(){
+                console.log("Database deleted");
                 resolve(true);
-            }else{
-                console.log("Doesnt exist! cannot delete ObjectStore ",storeName);
-                resolve(false);
-            }
+            };
+            deleteReq.onblocked = function (e) {
+              //alert("database blocked. Please close all tabs");
+              console.log("db Blocked!: ", e);
+              reject(false, e);
+            };
+            deleteReq.onerror = function(e){
+                //alert("Could not delete database. Database may not exist");
+                reject(false, e);
+            };
         });
     }
     
-    boildb.CreateObjectStore = function (storeSchema, db) {
-        console.log('CreateObjectStore',storeSchema);
-        return new Promise(function(resolve, reject){
-            var strParam = {};
-            if(!!storeSchema.primaryField)
-                strParam.keyPath = storeSchema.primaryField;
+    var Session = function(db){
+        var that = this;
+        
+        function GetKeyRange(operator, values) {
+            //console.log('GetKeyRange',operator, values);
+            var range = null;
+            switch (operator) {
+              case "==":
+                range = IDBKeyRange.only(values[0]);
+                break;
+              case "<":
+                range = IDBKeyRange.upperBound(values[0], true);
+                break;
+              case "<=":
+                range = IDBKeyRange.upperBound(values[0]);
+                break;
+              case ">":
+                range = IDBKeyRange.lowerBound(values[0], true);
+                break;
+              case ">=":
+                range = IDBKeyRange.lowerBound(values[0]);
+                range.upperOpen = true;
+                break;
+              case "> && <":
+                range = IDBKeyRange.bound(values[0], values[1], true, true);
+                break;
+              case ">= && <=":
+                //IDBKeyRange.bound(searchTerm, searchTerm + '\uffff') It'd be better to use \uffff as your dagger rather than z. You won't get search results like "wikip�dia" when searching for "wiki" if you use z...
+                range = IDBKeyRange.bound(values[0], values[1]);
+                break;
+             case "> && <=":
+                range = IDBKeyRange.bound(values[0], values[1], true, false);
+                break;
+              case ">= && <":
+                range = IDBKeyRange.bound(values[0], values[1], false, true);
+                break;
+            }
+            return range;
+        }
+        
+        this.Close = function(){
+            if(!!db){
+                db.close();
+            }
+        }
 
-            strParam.autoIncrement = (storeSchema.autoIncrement !== undefined) ? storeSchema.autoIncrement : false;
-
-            var store = db.createObjectStore(storeSchema.name, strParam);
-            if(!!storeSchema.indexes){
-                for(var i=0;i<storeSchema.indexes.length;i++){
-                    var idxParam = {};
-                    idxParam.unique = (storeSchema.indexes[i].unique !== undefined) ? idxParam.unique : false;
-                    idxParam.multiEntry = (storeSchema.indexes[i].multiEntry !== undefined) ? idxParam.multiEntry : false;
-
-                    store.createIndex(storeSchema.indexes[i].name, storeSchema.indexes[i].field, idxParam);
+        this.GetObj = function(storeName, key){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !key){
+                    reject('storename or key cannot be empty');
+                }else{
+                    var transaction = db.transaction([storeName], transactionType.READ_ONLY);
+                    var obj = null;
+                    transaction.oncomplete = function(event) {
+                        resolve(obj, storeName);
+                    };
+                    var objectStore = transaction.objectStore(storeName);
+                    var request = objectStore.get(key);
+                    request.onerror = function(e) { reject(e);}
+                    request.onsuccess = function(event) {
+                        obj = request.result;
+                    };
                 }
-            }
+            });
+        }
 
-            resolve(store);    
-        });
-    }
-    
-    boildb.ClearObjectStore = function(storeName){
-        return new Promise(function(resolve, reject){
-            boildb.GetDB().then(function(db){
+        this.SetObj = function(storeName, obj){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !obj){
+                    reject('storename or obj cannot be empty');
+                }else{
+                    var transaction = db.transaction([storeName], transactionType.READ_WRITE);
+
+                    var store = transaction.objectStore(storeName);
+                    var request = store.put(obj);
+                    request.onerror = function(e) { reject(e);}
+                    request.onsuccess = function(event) {
+                        resolve(true);
+                    };
+                }
+            });
+        }
+        
+        this.ClearObjectStore = function(storeName){
+            return new Promise(function(resolve, reject){
                 if (db.objectStoreNames.contains(storeName)) {
                     var clearTransaction = db.transaction([storeName], transactionType.READ_WRITE);
                     var clearRequest = clearTransaction.objectStore(storeName).clear();
@@ -269,17 +318,12 @@
                     console.log("Doesnt exist! cannot clear ObjectStore ",storeName);
                     reject(false);
                 }
-            }).catch(function(err){
-                console.log("db is null! cannot clear ObjectStore ",storeName);
-                reject(err);
             });
-        });
-    }
+        }
 
-    boildb.ClearAllStores = function(skipStores){
-        skipStores = skipStores || [];
-        return new Promise(function(resolve, reject){
-            boildb.GetDB().then(function(db){
+        this.ClearAllStores = function(skipStores){
+            skipStores = skipStores || [];
+            return new Promise(function(resolve, reject){
                 var storeList = db.objectStoreNames;
                 console.log(storeList);
 
@@ -291,7 +335,7 @@
                     {
                         continue;
                     }
-                    boildb.ClearAll(storeList[i],function(cleared){
+                    that.ClearAll(storeList[i],function(cleared){
                         count++;
                         if(len == count)
                         {
@@ -299,124 +343,67 @@
                         }
                     });
                 }
-                
+
                 if(len == 0){
                     reject(null);
                 }
-            }).catch(function(err){
-                console.log("db is null! cannot ClearAllStores ");
-                reject(err);
             });
-        });
-    }
+        }
 
-    boildb.Delete = function(storeName, key){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !key){
-                reject('storename or key cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
-                    var request = db.transaction(storeName, transactionType.READ_WRITE)
-                            .objectStore(storeName)
-                            .delete(key);
-                    request.onsuccess = function(event) {
-                        resolve(true);
-                    };
-                    request.onerror = function(event) {
-                        reject(event);
-                    };
-                }).catch(function(err){
-                    console.log("db is null! cannot Delete ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    //Uses cursor
-    boildb.DeleteRange = function(storeName, indexName, operator, values){  
-        return new Promise(function(resolve, reject){
-            if(!storeName || !indexName || !operator || !values){
-                reject('storeName, indexName, operator, values cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
-                    var transaction = db.transaction([storeName], transactionType.READ_WRITE);
-                    transaction.oncomplete = function(event) {
-                        resolve(true);
-                    };
-                    transaction.onerror = function(e) {reject(e);}
-                    var store = transaction.objectStore(storeName);
+        this.Delete = function(storeName, key){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !key){
+                    reject('storename or key cannot be empty');
+                }else{
+                    
+                        var request = db.transaction(storeName, transactionType.READ_WRITE)
+                                .objectStore(storeName)
+                                .delete(key);
+                        request.onsuccess = function(event) {
+                            resolve(true);
+                        };
+                        request.onerror = function(event) {
+                            reject(event);
+                        };
+                    
+                }
+            });
+        }
+        //Uses cursor
+        this.DeleteRange = function(storeName, indexName, operator, values){  
+            return new Promise(function(resolve, reject){
+                if(!storeName || !indexName || !operator || !values){
+                    reject('storeName, indexName, operator, values cannot be empty');
+                }else{
+                    
+                        var transaction = db.transaction([storeName], transactionType.READ_WRITE);
+                        transaction.oncomplete = function(event) {
+                            resolve(true);
+                        };
+                        transaction.onerror = function(e) {reject(e);}
+                        var store = transaction.objectStore(storeName);
 
-                    var Index = store.index(indexName);
-                    var cursorRequest = Index.openCursor(boildb.GetKeyRange(operator, values));
-                    cursorRequest.onsuccess = function(ev) {
-                        var cursor = cursorRequest.result;
-                        if (cursor) {
-                            cursor.delete();
-                            cursor.continue();
-                        }
-                    };
-                }).catch(function(err){
-                    console.log("db is null! cannot DeleteRange ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    boildb.GetObj = function(storeName, key){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !key){
-                reject('storename or key cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
-                    var transaction = db.transaction([storeName], transactionType.READ_ONLY);
-                    var obj = null;
-                    transaction.oncomplete = function(event) {
-                        resolve(obj, storeName);
-                    };
-                    var objectStore = transaction.objectStore(storeName);
-                    var request = objectStore.get(key);
-                    request.onerror = function(e) { reject(e);}
-                    request.onsuccess = function(event) {
-                        obj = request.result;
-                    };
-                }).catch(function(err){
-                    console.log("db is null! cannot GetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    boildb.SetObj = function(storeName, obj){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !obj){
-                reject('storename or obj cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
-                    var transaction = db.transaction([storeName], transactionType.READ_WRITE);
+                        var Index = store.index(indexName);
+                        var cursorRequest = Index.openCursor(GetKeyRange(operator, values));
+                        cursorRequest.onsuccess = function(ev) {
+                            var cursor = cursorRequest.result;
+                            if (cursor) {
+                                cursor.delete();
+                                cursor.continue();
+                            }
+                        };
+                    
+                }
+            });
+        }
 
-                    var store = transaction.objectStore(storeName);
-                    var request = store.put(obj);
-                    request.onerror = function(e) { reject(e);}
-                    request.onsuccess = function(event) {
-                        resolve(true);
-                    };
-                }).catch(function(err){
-                    console.log("db is null! cannot SetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    //Uses cursor
-    boildb.ListAll = function(storeName, keyPath){
-        keyPath = keyPath || false; 
-        return new Promise(function(resolve, reject){
-            if(!storeName){
-                reject('storename cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+        //Uses cursor
+        this.ListAll = function(storeName, keyPath){
+            keyPath = keyPath || false; 
+            return new Promise(function(resolve, reject){
+                if(!storeName){
+                    reject('storename cannot be empty');
+                }else{
                     var transaction = db.transaction(storeName, transactionType.READ_ONLY);
                     var list = !!keyPath ? {} : [];
                     transaction.oncomplete = function(event) {
@@ -437,21 +424,16 @@
                         }
                         cursor.continue();
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot ListAll ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    //Uses cursor, if indexName is null then will search on whole objectStore
-    boildb.FindObjList = function(storeName, indexName, operator, values, orderbyDesc){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !operator || !values){
-                reject('storename, operator, values cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }
+
+        //Uses cursor, if indexName is null then will search on whole objectStore
+        this.FindObjList = function(storeName, indexName, operator, values, orderbyDesc){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !operator || !values){
+                    reject('storename, operator, values cannot be empty');
+                }else{
                     var resultset = [];
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     transaction.oncomplete = function(event) {
@@ -464,14 +446,14 @@
                     {
                         var Index = store.index(indexName);
                         cursorRequest = orderbyDesc ? 
-                            Index.openCursor(boildb.GetKeyRange(operator, values), cursorType.PREV) : 
-                            Index.openCursor(boildb.GetKeyRange(operator, values));
+                            Index.openCursor(GetKeyRange(operator, values), cursorType.PREV) : 
+                            Index.openCursor(GetKeyRange(operator, values));
                     }
                     else
                     {
                         cursorRequest = orderbyDesc ? 
-                            store.openCursor(boildb.GetKeyRange(operator, values), cursorType.PREV) : 
-                            store.openCursor(boildb.GetKeyRange(operator, values));
+                            store.openCursor(GetKeyRange(operator, values), cursorType.PREV) : 
+                            store.openCursor(GetKeyRange(operator, values));
                     }
 
                     cursorRequest.onsuccess = function(ev) {
@@ -482,21 +464,16 @@
                         cursor.continue();
                       }
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot FindObjList ");
-                    reject(err);
-                });
-            }
-        });
-    }  
-    
-    //Uses openCursor, if indexName is null then will search on whole objectStore
-    boildb.FindObjListLimit = function(storeName, indexName, operator, values, orderbyDesc, limit){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !operator || !values){
-                reject('storename, operator, values cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }  
+
+        //Uses openCursor, if indexName is null then will search on whole objectStore
+        this.FindObjListLimit = function(storeName, indexName, operator, values, orderbyDesc, limit){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !operator || !values){
+                    reject('storename, operator, values cannot be empty');
+                }else{
                     var resultset = [];
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     transaction.oncomplete = function(event) {
@@ -512,14 +489,14 @@
                     {
                         var Index = store.index(indexName);
                         cursorRequest = orderbyDesc ? 
-                            Index.openCursor(boildb.GetKeyRange(operator, values), cursorType.PREV) : 
-                            Index.openCursor(boildb.GetKeyRange(operator, values));
+                            Index.openCursor(GetKeyRange(operator, values), cursorType.PREV) : 
+                            Index.openCursor(GetKeyRange(operator, values));
                     }
                     else
                     {
                         cursorRequest = orderbyDesc ? 
-                            store.openCursor(boildb.GetKeyRange(operator, values), cursorType.PREV) : 
-                            store.openCursor(boildb.GetKeyRange(operator, values));
+                            store.openCursor(GetKeyRange(operator, values), cursorType.PREV) : 
+                            store.openCursor(GetKeyRange(operator, values));
                     }
 
                     cursorRequest.onsuccess = function(ev) {
@@ -542,20 +519,15 @@
                             }
                         }
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot FindObjListLimit ");
-                    reject(err);
-                });
-            }
-        });
-    }
-     
-    boildb.AddList = function (storeName, list) {
-        return new Promise(function(resolve, reject){
-            if(!storeName || !list){
-                reject('storename,list cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }
+
+        this.AddList = function (storeName, list) {
+            return new Promise(function(resolve, reject){
+                if(!storeName || !list){
+                    reject('storename,list cannot be empty');
+                }else{
                     var _list = [];
                     if(!util.isArray(list)){
                         for(var i in list){
@@ -564,7 +536,7 @@
                     }else{
                         _list = list;
                     }
-                    
+
                     var transaction = db.transaction([storeName], transactionType.READ_WRITE);
                     var count = 0;
                     transaction.oncomplete = function (event) {
@@ -592,20 +564,16 @@
                             console.log('populate complete');
                         }
                     }
-                }).catch(function(err){
-                    console.log("db is null! cannot AddList ");
-                    reject(err);
-                });
-            }
-        });
-    };
-    //new
-    boildb.Count = function(storeName, operator, values){
-        return new Promise(function(resolve, reject){
-            if(!storeName){
-                reject('storename cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        };
+        
+        //new
+        this.Count = function(storeName, operator, values){
+            return new Promise(function(resolve, reject){
+                if(!storeName){
+                    reject('storename cannot be empty');
+                }else{
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     var obj = 0;
                     transaction.oncomplete = function(event) {
@@ -613,26 +581,22 @@
                     };
                     var objectStore = transaction.objectStore(storeName);
                     var request = !!operator ? 
-                        objectStore.count(boildb.GetKeyRange(operator, values)) :
+                        objectStore.count(GetKeyRange(operator, values)) :
                         objectStore.count() ;
                     request.onerror = function(e) { reject(e);}
                     request.onsuccess = function(event) {
                         obj = request.result;
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot GetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    //new
-    boildb.IndexCount = function(storeName, indexName, operator, values){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !indexName){
-                reject('storename, indexName cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }
+        
+        //new
+        this.IndexCount = function(storeName, indexName, operator, values){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !indexName){
+                    reject('storename, indexName cannot be empty');
+                }else{
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     var obj = 0;
                     transaction.oncomplete = function(event) {
@@ -641,34 +605,29 @@
                     var objectStore = transaction.objectStore(storeName);
                     var index = objectStore.index(indexName); 
                     var request = !!operator ? 
-                        index.count(boildb.GetKeyRange(operator, values)) :
+                        index.count(GetKeyRange(operator, values)) :
                         index.count();
-                    
+
                     request.onerror = function(e) { reject(e);}
                     request.onsuccess = function(event) {
                         obj = request.result;
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot GetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    //new, only chrome 45.0 has support
-    boildb.GetAll = function(storeName, operator, values, count){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !key){
-                reject('storename or key cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }
+
+        //new, only chrome 45.0 has support
+        this.GetAll = function(storeName, operator, values, count){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !key){
+                    reject('storename or key cannot be empty');
+                }else{
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     var obj = null;
                     transaction.oncomplete = function(event) {
                         resolve(obj);
                     };
-                    
+
                     var objectStore = transaction.objectStore(storeName);
                     var request = null;
                     if(!operator && !count)
@@ -677,35 +636,30 @@
                     }
                     else if(!!operator && !count)
                     {
-                        request = objectStore.getAll(boildb.GetKeyRange(operator, values));
+                        request = objectStore.getAll(GetKeyRange(operator, values));
                     }
                     else if(!operator && !!count)
                     {
                         request = objectStore.getAll(null, count);
                     }
                     else{
-                        request = objectStore.getAll(boildb.GetKeyRange(operator, values), count);
+                        request = objectStore.getAll(GetKeyRange(operator, values), count);
                     }
-                    
+
                     request.onerror = function(e) { reject(e);}
                     request.onsuccess = function(event) {
                         obj = request.result;
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot GetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    //Uses openCursor, 
-    boildb.GetKeyList = function(storeName, indexName, operator, values, orderbyDesc){
-        return new Promise(function(resolve, reject){
-            if(!storeName || !indexName){
-                reject('storename cannot be empty');
-            }else{
-                boildb.GetDB().then(function(db){
+                }
+            });
+        }
+
+        //Uses openCursor, 
+        this.GetKeyList = function(storeName, indexName, operator, values, orderbyDesc){
+            return new Promise(function(resolve, reject){
+                if(!storeName || !indexName){
+                    reject('storename cannot be empty');
+                }else{
                     var transaction = db.transaction([storeName], transactionType.READ_ONLY);
                     var list = [];
                     transaction.oncomplete = function(event) {
@@ -718,14 +672,14 @@
                     {
                         var Index = store.index(indexName);
                         cursorRequest = orderbyDesc ? 
-                            Index.openCursor(boildb.GetKeyRange(operator, values), cursorType.PREV) : 
-                            Index.openCursor(boildb.GetKeyRange(operator, values));
+                            Index.openCursor(GetKeyRange(operator, values), cursorType.PREV) : 
+                            Index.openCursor(GetKeyRange(operator, values));
                     }
                     else
                     {
                         cursorRequest = orderbyDesc ? store.openCursor(null, cursorType.PREV) : store.openCursor();
                     }
-                    
+
                     cursorRequest.onsuccess = function(ev) {
                         var cursor = cursorRequest.result || ev.target.result;
                         if(!!cursor == false)
@@ -734,18 +688,13 @@
                         list.push(cursor.key);
                         cursor.continue();
                     };
-                }).catch(function(err){
-                    console.log("db is null! cannot GetObj ");
-                    reject(err);
-                });
-            }
-        });
-    }
-    
-    boildb.ExportDB = function(skipStores){
-        return new Promise(function(resolve, reject){
-            skipStores = skipStores || [];
-            boildb.GetDB().then(function(db){
+                }
+            });
+        }
+
+        this.ExportDB = function(skipStores){
+            return new Promise(function(resolve, reject){
+                skipStores = skipStores || [];
                 var storeList = db.objectStoreNames;
                 var len = storeList.length - skipStores.length;
                 var obj = {};
@@ -772,20 +721,15 @@
                         }
                     });
                 }
-                
+
                 if(len == 0)
                     resolve("");
-            }).catch(function(err){
-                console.log("db is null! cannot ListAll ");
-                reject(err);
             });
-        });
-    };
+        };
 
-    boildb.ImportDB = function(jsonString, skipStores){
-        return new Promise(function(resolve, reject){
-            skipStores = skipStores || [];
-            boildb.GetDB().then(function(db){
+        this.ImportDB = function(jsonString, skipStores){
+            return new Promise(function(resolve, reject){
+                skipStores = skipStores || [];
                 var storeList = db.objectStoreNames;
                 var len = storeList.length - skipStores.length;
                 var obj = JSON.parse(jsonString);
@@ -810,15 +754,10 @@
                         }
                     });
                 }
-                
+
                 if(len == 0)
                     resolve("");
-                
-            }).catch(function(err){
-                console.log("db is null! cannot ListAll ");
-                reject(err);
             });
-        });
-    };
-
+        };
+    }
 } (window, window.boildb = window.boildb || {} ));
