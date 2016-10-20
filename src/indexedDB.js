@@ -3,20 +3,23 @@
 //Version: 1.0.0
 (function (environment, boildb, undefined) {
     "use strict";
-    
-    var getIndexedDB = function(env){
-        var indexedDB = env.indexedDB || env.mozIndexedDB || env.webkitIndexedDB || env.msIndexedDB;
-        if(!indexedDB)
+
+    //creating globals so it can be mocked
+    boildb.global = {
+        indexedDB: environment.indexedDB || environment.mozIndexedDB || environment.webkitIndexedDB || environment.msIndexedDB,
+        IDBTransaction: environment.IDBTransaction || environment.webkitIDBTransaction || environment.msIDBTransaction,
+        IDBKeyRange: environment.IDBKeyRange || environment.webkitIDBKeyRange || environment.msIDBKeyRange,
+        IDBCursor: environment.IDBCursor || environment.webkitIDBCursor || environment.msIDBCursor,
+        console: environment.console
+    };
+
+    var getIndexedDB = function(){
+        if(!boildb.global.indexedDB)
         {
             throw new Error("Current browser does not suppport indexedDB.");   
         }
-        return indexedDB;
+        return boildb.global.indexedDB;
     }
-    
-     // (Mozilla has never prefixed these objects, so we don't need environment.mozIDB*) and opera has become webkit based
-    var IDBTransaction = environment.IDBTransaction || environment.webkitIDBTransaction || environment.msIDBTransaction;
-    var IDBKeyRange = environment.IDBKeyRange || environment.webkitIDBKeyRange || environment.msIDBKeyRange;
-    var IDBCursor = environment.IDBCursor || environment.webkitIDBCursor || environment.msIDBCursor;
 
     var TransactionType = { READ_ONLY: "readonly", READ_WRITE: "readwrite" };
     var CursorType = { NEXT: "next", NEXT_NO_DUPLICATE: "nextunique", PREV: "prev", PREV_NO_DUPLICATE:"prevunique"};
@@ -35,149 +38,180 @@
     var _version = null;
     var _dbName = null;
     
-    boildb.Open = function (schema) {
+    boildb.getSchemaTemplate = function () {
+        //https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API
+        //https://hacks.mozilla.org/2012/02/storing-images-and-files-in-indexeddb/
         //schema structure
-        //    {
-        //        "dbName"   :"testDB",
-        //        "version"  :1,
-        //        //contains all final stores for new users
-        //        "stores"   :[{
-        //                        "name"         :"storeName1",
-        //                        "primaryField" :"",
-        //                        "autoIncrement":false,
-        //                        "indexes"      :[{
-        //                            "name":"",
-        //                            "field":"",
-        //                            "unique":false,
-        //                            "multiEntry":false//can index a field which is an array(i.e. can do tags)
-        //                        }]
-        //                    }],
-        //        "seedData": {"storeName1":[]},
-        //        //contains revisions for existing user
-        //        "revisions":[{
-        //            "version":1,
-        //            "stores":[],
-        //            "seedData": {"storeName1":[]},
-        //        }],
-        //    };
+          return {
+               "dbName"   :"testDB",
+               "version"  :1,//final version
+               //contains all final stores for new users
+               "stores"   :[{
+                               "name"         :"storeName1",
+                               "primaryField" :"field1",
+                               "autoIncrement":false,
+                               "indexes"      :[{
+                                   "name":"idx_field2",
+                                   "field":"field2",
+                                   "unique":false,
+                                   "multiEntry":false //can index a field which is an array(i.e. can do tags)
+                               }]
+                           }],
+               "seedData": {"storeName1":[]}
+           };
+    }
+
+    boildb.getUpgradeSchemaTemplate = function () {
+        //contains all revision history for existing user
+        //based on existing user backlog, start from where missed serially
+        //order of operations: transform, drop, refresh, merge, seedData
+        return [{
+                    "version":1,
+                    "refresh":[],//stores dropped and recreated
+                    "merge":[], //stores are not dropped, but index and other properties are dropped and recreated
+                    "drop":{"stores":[],"indexes":[]},//drop store and indexes
+                    "transform":[{"srcStore":"","destStore":"","srcField":[],"destField":[]}],//copy and transfer data to new/existing store
+                    "seedData": {},
+                }];
+    }
+    boildb.Open = function (schema) {
+        
         return new Promise(function(resolve, reject){
-            if(!!schema){
+            if(!!schema){//save schema in memmory
                 _schema = schema;
             }
             
             if(!_schema){
-                reject('schema is not defined');
+                reject(new Error('schema is not defined'));
             }
-            console.log('about to open...',_schema);
-            boildb.Close();
-            var dbOpenRequest = getIndexedDB(environment).open(_schema.dbName, _schema.version);
+            boildb.global.console.debug('about to open...',_schema);
             
-            dbOpenRequest.onerror = function(err) {
-                console.log('dbOpenRequest.onerror!', err);
-                //_db.close();
-                reject(err);
-            };
-            dbOpenRequest.onblocked = function (event) {
-                //alert("Please close all other tabs with this page open!");
-                console.log('dbOpenRequest.onblocked!', event);
-                //_db.close();
-                reject(event);
-            };
-            dbOpenRequest.onsuccess = function(event) {
-                _db = event.target.result;
-                _version = _schema.version;
-                _dbName = _schema.dbName;
-                console.log('dbOpenRequest.onsuccess!', boildb);
-                resolve(new Session(_db));
-            };
-            dbOpenRequest.onupgradeneeded = function (event) {
-                console.log("dbOpenRequest.onupgradeneeded!: ", event);
-                var db = event.target.result;//VERSION_CHANGE mode
-                var oldVersion = event.oldVersion;
-                var newVersion = event.newVersion;
-                var transaction = dbOpenRequest.transaction;//VERSION_CHANGE mode
-                
-                if (oldVersion === 0) {//new user create everything
-                    var createPromises = [];
-                    _schema.stores.forEach(function(store, index, strArray){
-                        createPromises.push(CreateObjectStore(store, db));
-                    });
-                    Promise.all(createPromises).then(function(values) { 
-                        console.log('onupgradeneeded added',values);
-                    }, function(addreason) {
-                        console.log('onupgradeneeded add err', addreason);
-                    });  
-                }else{
-                    var dropPromises = [];
-                    var createPromises = [];
-                    _schema.stores.forEach(function(store, index, strArray){
-                        dropPromises.push(DropObjectStore(store.name, db));
-                        createPromises.push(CreateObjectStore(store, db));
-                    });
-                    
-                    Promise.all(dropPromises).then(function(values) { 
-                        console.log('onupgradeneeded deleted',values);
-                        Promise.all(createPromises).then(function(values) { 
-                          console.log('onupgradeneeded added',values);
-                        }, function(addreason) {
-                          console.log('onupgradeneeded add err', addreason);
-                        });  
-                    }, function(delreason) {
-                      console.log('onupgradeneeded del err', delreason);
-                    });
-                }
-                transaction.oncomplete = function(event) {
-                    console.log('indexedDB.onupgradeneeded complete! ',event);
-                    //do data init
-
-
-                    //_schema.InitData(event.oldVersion, callback);
-                    //if (oldVersion == 0) {
-                    //    var count = Object.keys(schema.seedData).length;
-                    //    for(storeName in schema.seedData){
-                    //        boildb.AddList(storeName, schema.seedData[storeName])
-                    //            .then(function success(){
-                    //                count--;
-                    //            },function error(){
-                    //                count--;
-                    //            });
-                    //    }
-                    //}else{
-                    //    //todo
-                    //}
-
-                    
-                    //should not close db once upgrade is over
-                    //since if called then success is not called and error is invoked.
-                    //db.close();
-                    //resolve(1) //dont put resolve here since its not the end yet
+            try {
+                boildb.Close();
+                var dbOpenRequest = getIndexedDB().open(_schema.dbName, _schema.version);
+            
+                dbOpenRequest.onerror = function(err) {
+                    boildb.global.console.debug('dbOpenRequest.onerror!', err);
+                    reject(err);
                 };
-            };
+                dbOpenRequest.onblocked = function () {
+                    boildb.global.console.debug('dbOpenRequest.onblocked!');
+                    
+                    reject(new Error("Database schema cannot be modified, its in use. Close all open connection."));
+                };
+                dbOpenRequest.onsuccess = function(event) {
+                    _db = event.target.result;
+                    _version = _schema.version;
+                    _dbName = _schema.dbName;
+                    boildb.global.console.debug('dbOpenRequest.onsuccess!', boildb);
+                    resolve(new Session(_db));
+                };
+                dbOpenRequest.onupgradeneeded = function (event) {
+                    boildb.global.console.debug("dbOpenRequest.onupgradeneeded!: ", event);
+                    var db = event.target.result;//VERSION_CHANGE mode
+                    var oldVersion = event.oldVersion;
+                    var newVersion = event.newVersion;
+                    var transaction = dbOpenRequest.transaction;//VERSION_CHANGE mode
+                    
+                    if (oldVersion === 0) {
+                        //new user create everything. no need of revisions
+                        var createPromises = [];
+                        _schema.stores.forEach(function(store, index, strArray){
+                            createPromises.push(CreateObjectStore(store, db, transaction));
+                        });
+                        Promise.all(createPromises).then(function(values) { 
+                            boildb.global.console.debug('onupgradeneeded added',values);
+                        }, function(addreason) {
+                            boildb.global.console.debug('onupgradeneeded add err', addreason);
+                        });  
+                    }else{
+                        //return user. there is db updates in revisions
+                        var dropPromises = [];
+                        var createPromises = [];
+                        _schema.stores.forEach(function(store, index, strArray){
+                            dropPromises.push(DropObjectStore(store.name, db));
+                            createPromises.push(CreateObjectStore(store, db, transaction));
+                        });
+                        
+                        Promise.all(dropPromises).then(function(values) { 
+                            boildb.global.console.debug('onupgradeneeded deleted',values);
+                            Promise.all(createPromises).then(function(values) { 
+                            boildb.global.console.debug('onupgradeneeded added',values);
+                            }, function(addreason) {
+                            boildb.global.console.debug('onupgradeneeded add err', addreason);
+                            });  
+                        }, function(delreason) {
+                        boildb.global.console.debug('onupgradeneeded del err', delreason);
+                        });
+                    }
+                    transaction.oncomplete = function(event) {
+                        boildb.global.console.debug('indexedDB.onupgradeneeded complete! ',event);
+                        //do data init
+
+
+                        //_schema.InitData(event.oldVersion, callback);
+                        //if (oldVersion == 0) {
+                        //    var count = Object.keys(schema.seedData).length;
+                        //    for(storeName in schema.seedData){
+                        //        boildb.AddList(storeName, schema.seedData[storeName])
+                        //            .then(function success(){
+                        //                count--;
+                        //            },function error(){
+                        //                count--;
+                        //            });
+                        //    }
+                        //}else{
+                        //    //todo
+                        //}
+
+                        
+                        //should not close db once upgrade is over
+                        //since if called then success is not called and error is invoked.
+                        //db.close();
+                        //resolve(1) //dont put resolve here since its not the end yet
+                    };
+                };
+            } catch (error) {
+                boildb.global.console.debug('surya err:',error);
+                reject(error);
+            }
         });
         
         function DropObjectStore(storeName, db) {
             return new Promise(function(resolve, reject){
                 if (db.objectStoreNames.contains(storeName)) {
                     db.deleteObjectStore(storeName);
-                    console.log('objectstore ' + storeName + ' dropped');
+                    boildb.global.console.debug('objectstore ' + storeName + ' dropped');
                     resolve(true);
                 }else{
-                    console.log("Doesnt exist! cannot delete ObjectStore ",storeName);
+                    boildb.global.console.debug("Doesnt exist! cannot delete ObjectStore ",storeName);
                     resolve(false);
                 }
             });
         }
     
-        function CreateObjectStore(storeSchema, db) {
-            console.log('CreateObjectStore',storeSchema);
+        function CreateObjectStore(storeSchema, db, transaction) {
+            boildb.global.console.debug('CreateObjectStore',storeSchema);
             return new Promise(function(resolve, reject){
                 var strParam = {};
-                if(!!storeSchema.primaryField)
+                if(!!storeSchema.primaryField){
                     strParam.keyPath = storeSchema.primaryField;
+                }   
 
                 strParam.autoIncrement = (storeSchema.autoIncrement !== undefined) ? storeSchema.autoIncrement : false;
-
-                var store = db.createObjectStore(storeSchema.name, strParam);
+                //create new store or get reference if exists
+                var store = null;
+                if(db.objectStoreNames.contains(storeSchema.name)) {
+                    store = transaction.objectStore(storeSchema.name);
+                } else {
+                    store = db.createObjectStore(storeSchema.name, strParam);
+                }
+                //delete existing indexes if any
+                var indexNames = store.indexNames;
+                for(var i=0;i<store.indexNames.length;i++){
+                    store.deleteIndex(store.indexNames[i]);
+                }
+                //create new indexes if defined in schema
                 if(!!storeSchema.indexes){
                     for(var i=0;i<storeSchema.indexes.length;i++){
                         var idxParam = {};
@@ -198,19 +232,27 @@
             _db.close();
         }
     }
-	
+
+	boildb.Dispose = function(){
+        boildb.Close();
+        _schema = null;
+        _db = null;
+        _version = null;
+        _dbName = null;
+    }
+
     boildb.DeleteDatabase = function(dbName){
-		console.log('DeleteDatabase ', dbName || _dbName);
+		boildb.global.console.debug('DeleteDatabase ', dbName || _dbName);
 		return new Promise(function(resolve, reject){
             boildb.Close();
-            var deleteReq = getIndexedDB(environment).deleteDatabase(dbName || _dbName);
+            var deleteReq = getIndexedDB().deleteDatabase(dbName || _dbName);
             deleteReq.onsuccess = function(){
-                console.log("Database deleted");
+                boildb.global.console.debug("Database deleted");
                 resolve(true);
             };
             deleteReq.onblocked = function (e) {
               //alert("database blocked. Please close all tabs");
-              console.log("db Blocked!: ", e);
+              boildb.global.console.debug("db Blocked!: ", e);
               reject(false, e);
             };
             deleteReq.onerror = function(e){
@@ -224,7 +266,7 @@
         var that = this;
         
         function GetKeyRange(operator, values) {
-            //console.log('GetKeyRange',operator, values);
+            //boildb.global.console.debug('GetKeyRange',operator, values);
             var range = null;
             switch (operator) {
               case "==":
@@ -315,7 +357,7 @@
                         reject(event);
                     };
                 }else{
-                    console.log("Doesnt exist! cannot clear ObjectStore ",storeName);
+                    boildb.global.console.debug("Doesnt exist! cannot clear ObjectStore ",storeName);
                     reject(false);
                 }
             });
@@ -325,7 +367,7 @@
             skipStores = skipStores || [];
             return new Promise(function(resolve, reject){
                 var storeList = db.objectStoreNames;
-                console.log(storeList);
+                boildb.global.console.debug(storeList);
 
                 var len = storeList.length - skipStores.length;
                 var count = 0;
@@ -460,7 +502,7 @@
                       var cursor = cursorRequest.result;
                       if (cursor) {
                         resultset.push(cursor.value);
-                        //console.log(cursor.value);
+                        //boildb.global.console.debug(cursor.value);
                         cursor.continue();
                       }
                     };
@@ -506,7 +548,7 @@
                             if(limit>0){
                                 resultset.push(cursor.value);
                                 limit--;
-                                //console.log(cursor.value);
+                                //boildb.global.console.debug(cursor.value);
                                 cursor.continue();
                             }
                             else
@@ -514,7 +556,7 @@
                                 try{
                                     transaction.abort();
                                 }catch(e){
-                                    console.log(e);
+                                    boildb.global.console.debug(e);
                                 }
                             }
                         }
@@ -540,7 +582,7 @@
                     var transaction = db.transaction([storeName], transactionType.READ_WRITE);
                     var count = 0;
                     transaction.oncomplete = function (event) {
-                        console.log(storeName+' Added ' + count + '/' + _list.length);
+                        boildb.global.console.debug(storeName+' Added ' + count + '/' + _list.length);
                         resolve([count, _list.length, true]);//final result
                     };
                     transaction.onabort = function(event) {
@@ -561,7 +603,7 @@
                             ++count;
                             resolve([count, _list.length, false]);//for progress
                         } else {   // complete
-                            console.log('populate complete');
+                            boildb.global.console.debug('populate complete');
                         }
                     }
                 }
@@ -713,7 +755,7 @@
                             resolve(JSON.stringify(obj));
                         }
                     }).catch(function(err){
-                        console.log(err);
+                        boildb.global.console.debug(err);
                         index++;
                         if(index == len)
                         {
